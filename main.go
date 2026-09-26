@@ -26,18 +26,14 @@ func StartEchoServer(port string) error {
 	if err != nil {
 		return err
 	}
+	fmt.Printf("TCP Chat Server listening on %s\n", port)
 	defer listener.Close()
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			return err
 		}
-		defer conn.Close()
-		client := &Client{ID: GenerateClientID(), Conn: conn, JoinTime: time.Now()}
-		err = HandleClient(client)
-		if err != nil {
-			fmt.Printf("error during handle client: %v\n", err)
-		}
+		go handleClient(conn, GenerateClientID())
 	}
 	return nil
 }
@@ -69,6 +65,23 @@ func HandleClient(client *Client) error {
 		}
 	}
 	return nil
+}
+
+func handleClient(conn net.Conn, clientID string) {
+	defer conn.Close()
+
+	fmt.Printf("user %s connect", clientID)
+	client := &Client{ID: clientID, Conn: conn, JoinTime: time.Now()}
+	scanner := bufio.NewScanner(client.Conn)
+	for scanner.Scan() {
+		fmt.Printf("user %s send message: %s", client, scanner.Text())
+		msg := FormatMessage(ParseIncomingMessage(scanner.Text(), client.ID))
+		_, err := client.Conn.Write([]byte(msg + "\n"))
+		if err != nil {
+			fmt.Printf("error during send message client %s: %v\n", client, err)
+		}
+	}
+	fmt.Printf("user %s disconnected", client)
 }
 
 func GenerateClientID() string {
