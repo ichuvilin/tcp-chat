@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"time"
+	"uuid"
 )
 
 type ChatMessage struct {
@@ -14,23 +15,28 @@ type ChatMessage struct {
 	MessageType string
 }
 
+type Client struct {
+	ID       string
+	Conn     net.Conn
+	JoinTime time.Time
+}
+
 func StartEchoServer(port string) error {
 	listener, err := net.Listen("tcp", port)
 	if err != nil {
 		return err
 	}
 	defer listener.Close()
-	conn, err := listener.Accept()
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	scanner := bufio.NewScanner(conn)
-	for scanner.Scan() {
-		msg := FormatMessage(ParseIncomingMessage(scanner.Text(), "001"))
-		_, err := conn.Write([]byte(msg + "\n"))
+	for {
+		conn, err := listener.Accept()
 		if err != nil {
 			return err
+		}
+		defer conn.Close()
+		client := &Client{ID: GenerateClientID(), Conn: conn, JoinTime: time.Now()}
+		err = HandleClient(client)
+		if err != nil {
+			fmt.Printf("error during handle client: %v\n", err)
 		}
 	}
 	return nil
@@ -51,6 +57,22 @@ func ParseIncomingMessage(raw string, senderID string) ChatMessage {
 		ClientID:    senderID,
 		MessageType: "user",
 	}
+}
+
+func HandleClient(client *Client) error {
+	scanner := bufio.NewScanner(client.Conn)
+	for scanner.Scan() {
+		msg := FormatMessage(ParseIncomingMessage(scanner.Text(), client.ID))
+		_, err := client.Conn.Write([]byte(msg + "\n"))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func GenerateClientID() string {
+	return fmt.Sprintf("User_%s", uuid.New())
 }
 
 func main() {
