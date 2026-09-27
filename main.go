@@ -26,6 +26,29 @@ type Hub struct {
 	broadcast  chan ChatMessage
 	register   chan *Client
 	unregister chan *Client
+	req        chan Request
+}
+
+type Request struct {
+	ActiveUserResponse chan []string
+	CountUserResponse  chan int
+}
+
+func (h *Hub) GetActiveClients() []string {
+	response := make(chan []string)
+	h.req <- Request{
+		ActiveUserResponse: response,
+	}
+	return <-response
+}
+
+func (h *Hub) GetClientCount() int {
+	response := make(chan int)
+	h.req <- Request{
+		CountUserResponse: response,
+	}
+
+	return <-response
 }
 
 func (h *Hub) Run() {
@@ -39,6 +62,17 @@ func (h *Hub) Run() {
 			}
 		case message := <-h.broadcast:
 			h.BroadcastMessage(message)
+		case req := <-h.req:
+			if req.ActiveUserResponse != nil {
+				clients := make([]string, 0)
+				for k := range h.clients {
+					clients = append(clients, k)
+				}
+
+				req.ActiveUserResponse <- clients
+			} else if req.CountUserResponse != nil {
+				req.CountUserResponse <- len(h.clients)
+			}
 		}
 	}
 }
@@ -130,6 +164,7 @@ func main() {
 		broadcast:  make(chan ChatMessage),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
+		req:        make(chan Request),
 	}
 	go h.Run()
 	StartEchoServer(":8080", h)
