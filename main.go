@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"time"
 	"uuid"
 )
@@ -28,6 +29,12 @@ type Hub struct {
 	register   chan *Client
 	unregister chan *Client
 	req        chan Request
+	history    MessageHistory
+}
+
+type MessageHistory struct {
+	buf  []ChatMessage
+	head int
 }
 
 type Request struct {
@@ -63,6 +70,7 @@ func (h *Hub) Run() {
 			}
 		case message := <-h.broadcast:
 			h.BroadcastMessage(message)
+			h.history.Add(message)
 		case req := <-h.req:
 			if req.ActiveUserResponse != nil {
 				clients := make([]string, 0)
@@ -108,10 +116,10 @@ func StartEchoServer(port string, h *Hub) error {
 
 func FormatMessage(msg ChatMessage) string {
 	if msg.MessageType == "user" {
-		return fmt.Sprintf("[%s] <%s>: %s", msg.Timestamp.Format("15:04:05"), msg.ClientID, msg.Content)
+		return fmt.Sprintf("[%s] <%s>: %s\n", msg.Timestamp.Format("15:04:05"), msg.ClientID, msg.Content)
 	}
 
-	return fmt.Sprintf("[%s] *** %s", msg.Timestamp.Format("15:04:05"), msg.Content)
+	return fmt.Sprintf("[%s] *** %s\n", msg.Timestamp.Format("15:04:05"), msg.Content)
 }
 
 func ParseIncomingMessage(raw string, senderID string) ChatMessage {
@@ -123,18 +131,6 @@ func ParseIncomingMessage(raw string, senderID string) ChatMessage {
 	}
 }
 
-func HandleClient(client *Client) error {
-	scanner := bufio.NewScanner(client.Conn)
-	for scanner.Scan() {
-		msg := FormatMessage(ParseIncomingMessage(scanner.Text(), client.ID))
-		_, err := client.Conn.Write([]byte(msg + "\n"))
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func handleClient(conn net.Conn, clientID string, h *Hub) {
 	fmt.Printf("user %s connect\n", clientID)
 	client := h.setupClientConnection(conn)
@@ -144,13 +140,18 @@ func handleClient(conn net.Conn, clientID string, h *Hub) {
 	scanner := bufio.NewScanner(client.Conn)
 	for scanner.Scan() {
 		fmt.Printf("user %s send message: %s\n", client, scanner.Text())
-		msg := ParseIncomingMessage(scanner.Text(), client.ID)
-		h.broadcast <- msg
-		_, err := client.Conn.Write([]byte(FormatMessage(msg) + "\n"))
-		if err != nil {
-			fmt.Printf("error during send message client %s: %v\n", client, err)
+		space := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(space, "/") {
+			h.HandleCommand(client, space)
+		} else {
+			msg := ParseIncomingMessage(scanner.Text(), client.ID)
+			h.broadcast <- msg
+			_, err := client.Conn.Write([]byte(FormatMessage(msg) + "\n"))
+			if err != nil {
+				fmt.Printf("error during send message client %s: %v\n", client, err)
+			}
 		}
-		client = h.setupClientConnection(conn)
+		client.Conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 	}
 	fmt.Printf("user %s disconnected\n", client)
 }
@@ -172,7 +173,7 @@ func (h *Hub) setupClientConnection(conn net.Conn) *Client {
 	}
 	client.Conn.Write([]byte(FormatMessage(ChatMessage{
 		Timestamp:   time.Now(),
-		Content:     fmt.Sprintf("Welcome message to %s", client.ID),
+		Content:     fmt.Sprintf("Welcome message to %s\n", client.ID),
 		MessageType: "system",
 	})))
 	return client
@@ -192,6 +193,65 @@ func (h *Hub) cleanupClient(client *Client) {
 	}
 }
 
+func (mh *MessageHistory) Add(msg ChatMessage) {
+	mh.buf[mh.head%50] = msg
+	mh.head++
+}
+
+func (mh *MessageHistory) GetRecent() []ChatMessage {
+	size := len(mh.buf)
+
+	count := mh.head
+	if count > size {
+		count = size
+	}
+
+	start := mh.head % size
+
+	res := make([]ChatMessage, 0, count)
+
+	for i := 0; i < count; i++ {
+		index := (start + i) % size
+		res = append(res, mh.buf[index])
+	}
+
+	return res
+}
+
+func (h *Hub) SendUserList(client *Client) {
+	ids := make([]string, 0)
+	for id, _ := range h.clients {
+		ids = append(ids, id)
+	}
+
+	client.Conn.Write([]byte(FormatMessage(ChatMessage{
+		Timestamp:   time.Now(),
+		Content:     fmt.Sprintf("Online users (%d): %v\n", len(ids), ids),
+		MessageType: "system",
+	})))
+}
+
+func (h *Hub) HandleCommand(client *Client, command string) {
+	switch command {
+	case "/users":
+		h.SendUserList(client)
+	case "/quit":
+		h.cleanupClient(client)
+	case "/help":
+		client.Conn.Write([]byte(FormatMessage(ChatMessage{
+			Timestamp:   time.Now(),
+			Content:     "Commands: /help, /users, /quit, /time",
+			MessageType: "system",
+		})))
+	case "/time":
+		client.Conn.Write([]byte(FormatMessage(ChatMessage{
+			Timestamp:   time.Now(),
+			Content:     fmt.Sprintf("Current time: %s", time.Now().Format("15:04:05")),
+			MessageType: "system",
+		})))
+	}
+}
+
 func main() {
 	h := &Hub{
 		clients:    make(map[string]*Client),
@@ -199,6 +259,7 @@ func main() {
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
 		req:        make(chan Request),
+		history:    MessageHistory{buf: make([]ChatMessage, 50), head: 0},
 	}
 	go h.Run()
 	err := StartEchoServer(":8080", h)
