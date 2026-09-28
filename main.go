@@ -32,6 +32,14 @@ type Hub struct {
 	req        chan Request
 	history    MessageHistory
 	logger     *log.Logger
+	stats      *ServerStats
+}
+
+type ServerStats struct {
+	ActiveConnections      int
+	TotalMessagesProcessed int64
+	UptimeSeconds          int64
+	ErrorCount             int
 }
 
 type MessageHistory struct {
@@ -66,13 +74,16 @@ func (h *Hub) Run() {
 		select {
 		case client := <-h.register:
 			h.clients[client.ID] = client
+			h.stats.ActiveConnections++
 		case client := <-h.unregister:
 			if _, ok := h.clients[client.ID]; ok {
 				delete(h.clients, client.ID)
+				h.stats.ActiveConnections--
 			}
 		case message := <-h.broadcast:
 			h.BroadcastMessage(message)
 			h.history.Add(message)
+			h.stats.TotalMessagesProcessed++
 		case req := <-h.req:
 			if req.ActiveUserResponse != nil {
 				clients := make([]string, 0)
@@ -94,6 +105,7 @@ func (h *Hub) BroadcastMessage(msg ChatMessage) {
 			_, err := client.Conn.Write([]byte(FormatMessage(msg)))
 			if err != nil {
 				h.logger.Printf("ERROR error writing to client %s: %v\n", id, err)
+				h.stats.ErrorCount++
 			}
 		}
 	}
@@ -133,6 +145,12 @@ func ParseIncomingMessage(raw string, senderID string) ChatMessage {
 }
 
 func handleClient(conn net.Conn, clientID string, h *Hub) {
+	defer func() {
+		if r := recover(); r != nil {
+			h.logger.Printf("ERROR recovered: %v", r)
+		}
+	}()
+
 	h.logger.Printf("INFO Client %s connected\n", clientID)
 	client := h.setupClientConnection(conn)
 	if client == nil {
@@ -152,11 +170,13 @@ func handleClient(conn net.Conn, clientID string, h *Hub) {
 			h.broadcast <- msg
 			_, err := client.Conn.Write([]byte(FormatMessage(msg) + "\n"))
 			if err != nil {
+				h.stats.ErrorCount++
 				h.logger.Printf("ERROR error during send message client %s: %v\n", client, err)
 			}
 		}
 		err := client.Conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 		if err != nil {
+			h.stats.ErrorCount++
 			h.logger.Printf("ERROR Can't update deadline for user %s: %v\n", client.ID, err)
 			return
 		}
@@ -171,6 +191,7 @@ func GenerateClientID() string {
 func (h *Hub) setupClientConnection(conn net.Conn) *Client {
 	err := conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 	if err != nil {
+		h.stats.ErrorCount++
 		h.logger.Printf("ERROR error during set deadline: %v\n", err)
 		return nil
 	}
@@ -283,6 +304,7 @@ func setupLogging(level string) *log.Logger {
 
 func main() {
 	logger := setupLogging("INFO")
+
 	h := &Hub{
 		clients:    make(map[string]*Client),
 		broadcast:  make(chan ChatMessage),
@@ -291,6 +313,7 @@ func main() {
 		req:        make(chan Request),
 		history:    MessageHistory{buf: make([]ChatMessage, 50), head: 0},
 		logger:     logger,
+		stats:      new(ServerStats),
 	}
 	go h.Run()
 
