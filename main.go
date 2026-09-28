@@ -2,11 +2,15 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 	"uuid"
 )
@@ -33,6 +37,7 @@ type Hub struct {
 	history    MessageHistory
 	logger     *log.Logger
 	stats      *ServerStats
+	wg         sync.WaitGroup
 }
 
 type ServerStats struct {
@@ -69,9 +74,11 @@ func (h *Hub) GetClientCount() int {
 	return <-response
 }
 
-func (h *Hub) Run() {
+func (h *Hub) Run(ctx context.Context) {
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case client := <-h.register:
 			h.clients[client.ID] = client
 			h.stats.ActiveConnections++
@@ -80,7 +87,10 @@ func (h *Hub) Run() {
 				delete(h.clients, client.ID)
 				h.stats.ActiveConnections--
 			}
-		case message := <-h.broadcast:
+		case message, ok := <-h.broadcast:
+			if !ok {
+				return
+			}
 			h.BroadcastMessage(message)
 			h.history.Add(message)
 			h.stats.TotalMessagesProcessed++
@@ -111,7 +121,7 @@ func (h *Hub) BroadcastMessage(msg ChatMessage) {
 	}
 }
 
-func StartEchoServer(port string, h *Hub) error {
+func StartEchoServer(ctx context.Context, port string, h *Hub) error {
 	listener, err := net.Listen("tcp", port)
 	if err != nil {
 		return err
@@ -123,7 +133,12 @@ func StartEchoServer(port string, h *Hub) error {
 		if err != nil {
 			return err
 		}
-		go handleClient(conn, GenerateClientID(), h)
+		h.wg.Add(1)
+		go func() {
+			defer h.wg.Done()
+
+			handleClient(ctx, conn, GenerateClientID(), h)
+		}()
 	}
 }
 
@@ -144,7 +159,7 @@ func ParseIncomingMessage(raw string, senderID string) ChatMessage {
 	}
 }
 
-func handleClient(conn net.Conn, clientID string, h *Hub) {
+func handleClient(ctx context.Context, conn net.Conn, clientID string, h *Hub) {
 	defer func() {
 		if r := recover(); r != nil {
 			h.logger.Printf("ERROR recovered: %v", r)
@@ -158,7 +173,12 @@ func handleClient(conn net.Conn, clientID string, h *Hub) {
 	}
 	defer h.cleanupClient(client)
 
-	h.register <- client
+	select {
+	case <-ctx.Done():
+		return
+	case h.register <- client:
+	}
+
 	scanner := bufio.NewScanner(client.Conn)
 	for scanner.Scan() {
 		h.logger.Printf("INFO client %s send message: %s\n", client.ID, scanner.Text())
@@ -302,9 +322,47 @@ func setupLogging(level string) *log.Logger {
 	)
 }
 
+func setupSignalHandling() chan os.Signal {
+	signals := make(chan os.Signal, 1)
+
+	signal.Notify(
+		signals,
+		os.Interrupt,
+		syscall.SIGTERM,
+	)
+
+	return signals
+}
+
+func (h *Hub) Shutdown(ctx context.Context) error {
+	for _, client := range h.clients {
+		_, err := client.Conn.Write(
+			[]byte(FormatMessage(ParseIncomingMessage("Server is shutting down", ""))),
+		)
+
+		if err != nil {
+			h.logger.Printf(
+				"ERROR failed to notify client %s: %v",
+				client.ID,
+				err,
+			)
+		}
+	}
+
+	done := make(chan struct{})
+
+	go func() {
+		h.wg.Wait()
+		close(done)
+	}()
+
+	close(h.broadcast)
+
+	return nil
+}
+
 func main() {
 	logger := setupLogging("INFO")
-
 	h := &Hub{
 		clients:    make(map[string]*Client),
 		broadcast:  make(chan ChatMessage),
@@ -315,11 +373,33 @@ func main() {
 		logger:     logger,
 		stats:      new(ServerStats),
 	}
-	go h.Run()
 
-	err := StartEchoServer(":8080", h)
-	if err != nil {
-		logger.Printf("ERROR error during start server: %v\n", err)
-		os.Exit(1)
+	signals := setupSignalHandling()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go h.Run(ctx)
+
+	go func() {
+		err := StartEchoServer(ctx, ":8080", h)
+		if err != nil {
+			logger.Printf("ERROR error during start server: %v\n", err)
+			os.Exit(1)
+		}
+	}()
+
+	sig := <-signals
+
+	logger.Printf("INFO Received signal: %v", sig)
+
+	shutdownCtx, cancel := context.WithTimeout(
+		context.Background(),
+		10*time.Second,
+	)
+	defer cancel()
+
+	if err := h.Shutdown(shutdownCtx); err != nil {
+		logger.Printf("ERROR shutdown failed: %v", err)
 	}
 }
