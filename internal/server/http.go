@@ -10,7 +10,11 @@ import (
 func StartHTTPMonitoring(hub *hub.Hub, port string) {
 	http.HandleFunc("/health", handleHealthEndpoint(hub))
 	http.HandleFunc("/stats", handleStatsEndpoint(hub))
-	http.ListenAndServe(port, nil)
+	err := http.ListenAndServe(port, nil)
+	if err != nil {
+		hub.Logger.Printf("ERROR Can't start http client: %v", err)
+		return
+	}
 }
 
 func handleHealthEndpoint(hub *hub.Hub) http.HandlerFunc {

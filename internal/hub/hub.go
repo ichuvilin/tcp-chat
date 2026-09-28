@@ -163,7 +163,9 @@ func (h *Hub) HandleClient(ctx context.Context, conn net.Conn) {
 		h.Logger.Printf("INFO client %s send message: %s\n", client.ID, scanner.Text())
 		space := strings.TrimSpace(scanner.Text())
 		if strings.HasPrefix(space, "/") {
-			h.HandleCommand(ctx, client, space)
+			if h.HandleCommand(client, space) {
+				return
+			}
 		} else {
 			msg := domain.ParseIncomingMessage(scanner.Text(), client.ID)
 			select {
@@ -252,26 +254,42 @@ func (h *Hub) SendUserList(client *domain.Client) {
 	client.Conn.Write([]byte(domain.FormatMessage(domain.CreateSystemMessage(fmt.Sprintf("Online users (%d): %v\n", len(ids), ids)))))
 }
 
-func (h *Hub) HandleCommand(ctx context.Context, client *domain.Client, command string) {
+func (h *Hub) HandleCommand(client *domain.Client, command string) bool {
 	switch command {
 	case "/users":
 		h.SendUserList(client)
+
 	case "/quit":
-		h.cleanupClient(ctx, client)
+		return true
+
 	case "/help":
-		client.Conn.Write([]byte(domain.FormatMessage(domain.CreateSystemMessage("Commands: /help, /users, /quit, /time"))))
+		client.Conn.Write([]byte(domain.FormatMessage(
+			domain.CreateSystemMessage("Commands: /help, /users, /quit, /time"),
+		)))
+
 	case "/time":
 		recent := h.history.GetRecent()
+
 		if len(recent) > 0 {
-			client.Conn.Write([]byte(domain.FormatMessage(domain.CreateSystemMessage("--- Recent messages ---"))))
+			client.Conn.Write([]byte(
+				domain.FormatMessage(
+					domain.CreateSystemMessage("--- Recent messages ---"),
+				),
+			))
 
 			for _, msg := range recent {
 				client.Conn.Write([]byte(domain.FormatMessage(msg)))
 			}
 
-			client.Conn.Write([]byte(domain.FormatMessage(domain.CreateSystemMessage("--- End of history ---"))))
+			client.Conn.Write([]byte(
+				domain.FormatMessage(
+					domain.CreateSystemMessage("--- End of history ---"),
+				),
+			))
 		}
 	}
+
+	return false
 }
 
 func (h *Hub) Shutdown(ctx context.Context) error {

@@ -28,7 +28,7 @@ func New() {
 
 	go h.Run()
 
-	go server.StartHTTPMonitoring(h, "9090")
+	go server.StartHTTPMonitoring(h, ":9090")
 
 	go func() {
 		err := server.StartEchoServer(ctx, cfg, h)
