@@ -393,11 +393,13 @@ func main() {
 
 	logger.Printf("INFO Received signal: %v", sig)
 
-	shutdownCtx, cancel := context.WithTimeout(
+	cancel()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(
 		context.Background(),
 		10*time.Second,
 	)
-	defer cancel()
+	defer shutdownCancel()
 
 	if err := h.Shutdown(shutdownCtx); err != nil {
 		logger.Printf("ERROR shutdown failed: %v", err)
