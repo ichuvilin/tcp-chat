@@ -247,6 +247,7 @@ func (h *Hub) HandleCommand(ctx context.Context, client *domain.Client, command 
 		}
 	}
 }
+
 func (h *Hub) Shutdown(ctx context.Context) error {
 	for _, client := range h.clients {
 		_, err := client.Conn.Write(
@@ -257,6 +258,15 @@ func (h *Hub) Shutdown(ctx context.Context) error {
 		if err != nil {
 			h.Logger.Printf(
 				"ERROR failed to notify client %s: %v",
+				client.ID,
+				err,
+			)
+		}
+
+		err = client.Conn.SetReadDeadline(time.Now())
+		if err != nil {
+			h.Logger.Printf(
+				"ERROR failed to stop reading from client %s: %v",
 				client.ID,
 				err,
 			)
