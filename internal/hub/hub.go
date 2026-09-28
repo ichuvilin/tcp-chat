@@ -51,21 +51,42 @@ func NewHub(logger *log.Logger, historySize int) *Hub {
 	}
 }
 
-func (h *Hub) GetActiveClients() []string {
-	response := make(chan []string)
-	h.req <- Request{
+func (h *Hub) GetActiveClients(ctx context.Context) ([]string, error) {
+	response := make(chan []string, 1)
+
+	select {
+	case h.req <- Request{
 		ActiveUserResponse: response,
+	}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-	return <-response
+
+	select {
+	case clients := <-response:
+		return clients, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
-func (h *Hub) GetClientCount() int {
-	response := make(chan int)
-	h.req <- Request{
+func (h *Hub) GetClientCount(ctx context.Context) (int, error) {
+	response := make(chan int, 1)
+
+	select {
+	case h.req <- Request{
 		CountUserResponse: response,
+	}:
+	case <-ctx.Done():
+		return 0, ctx.Err()
 	}
 
-	return <-response
+	select {
+	case count := <-response:
+		return count, nil
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
 }
 
 func (h *Hub) GetClients(ctx context.Context) ([]*domain.Client, error) {
@@ -165,7 +186,7 @@ func (h *Hub) HandleClient(ctx context.Context, conn net.Conn) {
 		h.Logger.Printf("INFO client %s send message: %s\n", client.ID, scanner.Text())
 		space := strings.TrimSpace(scanner.Text())
 		if strings.HasPrefix(space, "/") {
-			if h.HandleCommand(client, space) {
+			if h.HandleCommand(ctx, client, space) {
 				return
 			}
 		} else {
@@ -261,19 +282,39 @@ func (mh *MessageHistory) GetRecent() []domain.ChatMessage {
 	return res
 }
 
-func (h *Hub) SendUserList(client *domain.Client) {
-	ids := make([]string, 0)
-	for id, _ := range h.clients {
-		ids = append(ids, id)
+func (h *Hub) SendUserList(ctx context.Context, client *domain.Client) {
+	ids, err := h.GetActiveClients(ctx)
+	if err != nil {
+		h.Logger.Printf(
+			"ERROR failed to get active users: %v",
+			err,
+		)
+		return
 	}
 
-	client.Conn.Write([]byte(domain.FormatMessage(domain.CreateSystemMessage(fmt.Sprintf("Online users (%d): %v\n", len(ids), ids)))))
+	_, err = client.Conn.Write([]byte(
+		domain.FormatMessage(
+			domain.CreateSystemMessage(
+				fmt.Sprintf("Online users (%d): %v\n", len(ids), ids),
+			),
+		),
+	))
+
+	if err != nil {
+		atomic.AddInt64(&h.Stats.ErrorCount, 1)
+
+		h.Logger.Printf(
+			"ERROR failed to send user list to client %s: %v",
+			client.ID,
+			err,
+		)
+	}
 }
 
-func (h *Hub) HandleCommand(client *domain.Client, command string) bool {
+func (h *Hub) HandleCommand(ctx context.Context, client *domain.Client, command string) bool {
 	switch command {
 	case "/users":
-		h.SendUserList(client)
+		h.SendUserList(ctx, client)
 
 	case "/quit":
 		return true

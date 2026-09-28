@@ -29,7 +29,15 @@ func StartEchoServer(ctx context.Context, cfg config.ServerConfig, h *hub.Hub) e
 			}
 			return err
 		}
-		count := h.GetClientCount()
+		count, err := h.GetClientCount(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+
+			return err
+		}
+
 		if count >= cfg.MaxConnections {
 			conn.Close()
 			continue
