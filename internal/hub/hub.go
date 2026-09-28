@@ -124,7 +124,7 @@ func (h *Hub) HandleClient(ctx context.Context, conn net.Conn) {
 		return
 	}
 	h.Logger.Printf("INFO Client %s connected\n", client.ID)
-	defer h.cleanupClient(client)
+	defer h.cleanupClient(ctx, client)
 
 	select {
 	case <-ctx.Done():
@@ -137,10 +137,14 @@ func (h *Hub) HandleClient(ctx context.Context, conn net.Conn) {
 		h.Logger.Printf("INFO client %s send message: %s\n", client.ID, scanner.Text())
 		space := strings.TrimSpace(scanner.Text())
 		if strings.HasPrefix(space, "/") {
-			h.HandleCommand(client, space)
+			h.HandleCommand(ctx, client, space)
 		} else {
 			msg := domain.ParseIncomingMessage(scanner.Text(), client.ID)
-			h.broadcast <- msg
+			select {
+			case <-ctx.Done():
+				return
+			case h.broadcast <- msg:
+			}
 			_, err := client.Conn.Write([]byte(domain.FormatMessage(msg) + "\n"))
 			if err != nil {
 				h.Stats.ErrorCount++
@@ -173,14 +177,19 @@ func (h *Hub) setupClientConnection(conn net.Conn) *domain.Client {
 	return client
 }
 
-func (h *Hub) cleanupClient(client *domain.Client) {
+func (h *Hub) cleanupClient(ctx context.Context, client *domain.Client) {
 	err := client.Conn.Close()
 	if err != nil {
 		h.Logger.Printf("ERROR error during closing connection for user %s: %v\n", client.ID, err)
 		return
 	}
-	h.unregister <- client
-	h.broadcast <- domain.CreateSystemMessage(fmt.Sprintf("Client %s disconnected (timeout)", client.ID))
+	select {
+	case <-ctx.Done():
+		return
+	default:
+		h.unregister <- client
+		h.broadcast <- domain.CreateSystemMessage(fmt.Sprintf("Client %s disconnected (timeout)", client.ID))
+	}
 }
 
 func (mh *MessageHistory) Add(msg domain.ChatMessage) {
@@ -217,12 +226,12 @@ func (h *Hub) SendUserList(client *domain.Client) {
 	client.Conn.Write([]byte(domain.FormatMessage(domain.CreateSystemMessage(fmt.Sprintf("Online users (%d): %v\n", len(ids), ids)))))
 }
 
-func (h *Hub) HandleCommand(client *domain.Client, command string) {
+func (h *Hub) HandleCommand(ctx context.Context, client *domain.Client, command string) {
 	switch command {
 	case "/users":
 		h.SendUserList(client)
 	case "/quit":
-		h.cleanupClient(client)
+		h.cleanupClient(ctx, client)
 	case "/help":
 		client.Conn.Write([]byte(domain.FormatMessage(domain.CreateSystemMessage("Commands: /help, /users, /quit, /time"))))
 	case "/time":
@@ -238,12 +247,13 @@ func (h *Hub) HandleCommand(client *domain.Client, command string) {
 		}
 	}
 }
-func (h *Hub) Shutdown() error {
+func (h *Hub) Shutdown(ctx context.Context) error {
 	for _, client := range h.clients {
 		_, err := client.Conn.Write(
-			[]byte(domain.FormatMessage(domain.CreateSystemMessage("Server is shutting down"))),
+			[]byte(domain.FormatMessage(
+				domain.CreateSystemMessage("Server is shutting down"),
+			)),
 		)
-
 		if err != nil {
 			h.Logger.Printf(
 				"ERROR failed to notify client %s: %v",
@@ -260,9 +270,14 @@ func (h *Hub) Shutdown() error {
 		close(done)
 	}()
 
-	close(h.broadcast)
+	select {
+	case <-done:
+		h.Logger.Println("INFO All client goroutines stopped")
+		return nil
 
-	return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func GenerateClientID() string {

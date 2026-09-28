@@ -44,13 +44,13 @@ func New() {
 
 	cancel()
 
-	_, shutdownCancel := context.WithTimeout(
+	shutdownCtx, shutdownCancel := context.WithTimeout(
 		context.Background(),
 		10*time.Second,
 	)
 	defer shutdownCancel()
 
-	if err := h.Shutdown(); err != nil {
+	if err := h.Shutdown(shutdownCtx); err != nil {
 		logger.Printf("ERROR shutdown failed: %v", err)
 	}
 }
