@@ -270,7 +270,7 @@ func (mh *MessageHistory) GetRecent() []domain.ChatMessage {
 		count = size
 	}
 
-	start := mh.head % size
+	start := (mh.head - count + size) % size
 
 	res := make([]domain.ChatMessage, 0, count)
 
