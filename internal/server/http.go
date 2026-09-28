@@ -3,7 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
-	"tcp-chat/internal/hub"
+	"tcp-chat-server/internal/hub"
 )
 
 func StartHTTPMonitoring(hub *hub.Hub, port string) {

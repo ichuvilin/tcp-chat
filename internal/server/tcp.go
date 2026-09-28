@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"tcp-chat/internal/config"
-	"tcp-chat/internal/hub"
+	"tcp-chat-server/internal/config"
+	"tcp-chat-server/internal/hub"
 )
 
 func StartEchoServer(ctx context.Context, cfg config.ServerConfig, h *hub.Hub) error {

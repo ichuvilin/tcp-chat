@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"tcp-chat/internal/domain"
+	"tcp-chat-server/internal/domain"
 	"time"
 	"uuid"
 )

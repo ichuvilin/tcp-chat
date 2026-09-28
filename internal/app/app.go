@@ -6,9 +6,9 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"tcp-chat/internal/config"
-	"tcp-chat/internal/hub"
-	"tcp-chat/internal/server"
+	"tcp-chat-server/internal/config"
+	"tcp-chat-server/internal/hub"
+	"tcp-chat-server/internal/server"
 	"time"
 )
 

@@ -1,1 +1,1 @@
-module tcp-chat
+module tcp-chat-server
