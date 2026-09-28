@@ -1,0 +1,35 @@
+package server
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"tcp-chat/internal/config"
+	"tcp-chat/internal/hub"
+)
+
+func StartEchoServer(ctx context.Context, cfg config.ServerConfig, h *hub.Hub) error {
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%s", cfg.Port))
+	if err != nil {
+		return err
+	}
+	h.Logger.Printf("INFO TCP Chat Server listening on %s\n", cfg.Port)
+	defer listener.Close()
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			return err
+		}
+		count := h.GetClientCount()
+		if count >= cfg.MaxConnections {
+			conn.Close()
+			continue
+		}
+		h.Wg.Add(1)
+		go func() {
+			defer h.Wg.Done()
+
+			h.HandleClient(ctx, conn)
+		}()
+	}
+}
