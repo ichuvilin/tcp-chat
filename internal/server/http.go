@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"tcp-chat/internal/hub"
-	"time"
 )
 
 func StartHTTPMonitoring(hub *hub.Hub, port string) {
@@ -20,17 +19,16 @@ func StartHTTPMonitoring(hub *hub.Hub, port string) {
 func handleHealthEndpoint(hub *hub.Hub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-
-		hub.Stats.UptimeSeconds = time.Now().Unix() - hub.Stats.StartedAt
+		stats := hub.GetStats()
 
 		response := struct {
 			Status            string `json:"status"`
-			ActiveConnections int    `json:"active_connections"`
+			ActiveConnections int64  `json:"active_connections"`
 			UptimeSeconds     int64  `json:"uptime_seconds"`
 		}{
 			Status:            "healthy",
-			ActiveConnections: hub.Stats.ActiveConnections,
-			UptimeSeconds:     hub.Stats.UptimeSeconds,
+			ActiveConnections: stats.ActiveConnections,
+			UptimeSeconds:     stats.UptimeSeconds,
 		}
 
 		if err := json.NewEncoder(w).Encode(response); err != nil {
@@ -43,12 +41,13 @@ func handleHealthEndpoint(hub *hub.Hub) http.HandlerFunc {
 func handleStatsEndpoint(hub *hub.Hub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		hub.Stats.UptimeSeconds = time.Now().Unix() - hub.Stats.StartedAt
-		stats, err := json.MarshalIndent(hub.Stats, "", " ")
+		stats := hub.GetStats()
+
+		data, err := json.MarshalIndent(stats, "", " ")
 		if err != nil {
 			http.Error(w, "failed to marshal stats", http.StatusInternalServerError)
 			return
 		}
-		w.Write(stats)
+		w.Write(data)
 	}
 }

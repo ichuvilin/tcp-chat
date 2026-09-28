@@ -20,10 +20,10 @@ type Client struct {
 }
 
 type ServerStats struct {
-	ActiveConnections      int   `json:"active_connections"`
+	ActiveConnections      int64 `json:"active_connections"`
 	TotalMessagesProcessed int64 `json:"total_messages_processed"`
 	UptimeSeconds          int64 `json:"uptime_seconds"`
-	ErrorCount             int   `json:"error_count"`
+	ErrorCount             int64 `json:"error_count"`
 	StartedAt              int64 `json:"-"`
 }
 

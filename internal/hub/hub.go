@@ -9,6 +9,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"tcp-chat/internal/domain"
 	"time"
 	"uuid"
@@ -91,11 +92,11 @@ func (h *Hub) Run() {
 		select {
 		case client := <-h.register:
 			h.clients[client.ID] = client
-			h.Stats.ActiveConnections++
+			atomic.AddInt64(&h.Stats.ActiveConnections, 1)
 		case client := <-h.unregister:
 			if _, ok := h.clients[client.ID]; ok {
 				delete(h.clients, client.ID)
-				h.Stats.ActiveConnections--
+				atomic.AddInt64(&h.Stats.ActiveConnections, 1)
 			}
 		case message, ok := <-h.broadcast:
 			if !ok {
@@ -103,7 +104,7 @@ func (h *Hub) Run() {
 			}
 			h.BroadcastMessage(message)
 			h.history.Add(message)
-			h.Stats.TotalMessagesProcessed++
+			atomic.AddInt64(&h.Stats.TotalMessagesProcessed, 1)
 		case req := <-h.req:
 			if req.ActiveUserResponse != nil {
 				clients := make([]string, 0)
@@ -133,7 +134,7 @@ func (h *Hub) BroadcastMessage(msg domain.ChatMessage) {
 			_, err := client.Conn.Write([]byte(domain.FormatMessage(msg)))
 			if err != nil {
 				h.Logger.Printf("ERROR error writing to client %s: %v\n", id, err)
-				h.Stats.ErrorCount++
+				atomic.AddInt64(&h.Stats.TotalMessagesProcessed, 1)
 			}
 		}
 	}
@@ -176,13 +177,13 @@ func (h *Hub) HandleClient(ctx context.Context, conn net.Conn) {
 			}
 			_, err := client.Conn.Write([]byte(domain.FormatMessage(msg) + "\n"))
 			if err != nil {
-				h.Stats.ErrorCount++
+				atomic.AddInt64(&h.Stats.ErrorCount, 1)
 				h.Logger.Printf("ERROR error during send message client %s: %v\n", client, err)
 			}
 		}
 		err := client.Conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 		if err != nil {
-			h.Stats.ErrorCount++
+			atomic.AddInt64(&h.Stats.ErrorCount, 1)
 			h.Logger.Printf("ERROR Can't update deadline for user %s: %v\n", client.ID, err)
 			return
 		}
@@ -207,7 +208,7 @@ func (h *Hub) HandleClient(ctx context.Context, conn net.Conn) {
 func (h *Hub) setupClientConnection(conn net.Conn) *domain.Client {
 	err := conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 	if err != nil {
-		h.Stats.ErrorCount++
+		atomic.AddInt64(&h.Stats.ErrorCount, 1)
 		h.Logger.Printf("ERROR error during set deadline: %v\n", err)
 		return nil
 	}
@@ -305,6 +306,16 @@ func (h *Hub) HandleCommand(client *domain.Client, command string) bool {
 	}
 
 	return false
+}
+
+func (h *Hub) GetStats() domain.ServerStats {
+	return domain.ServerStats{
+		ActiveConnections:      atomic.LoadInt64(&h.Stats.ActiveConnections),
+		TotalMessagesProcessed: atomic.LoadInt64(&h.Stats.TotalMessagesProcessed),
+		ErrorCount:             atomic.LoadInt64(&h.Stats.ErrorCount),
+		StartedAt:              h.Stats.StartedAt,
+		UptimeSeconds:          time.Now().Unix() - h.Stats.StartedAt,
+	}
 }
 
 func (h *Hub) Shutdown(ctx context.Context) error {
