@@ -3,6 +3,7 @@ package hub
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -184,6 +185,20 @@ func (h *Hub) HandleClient(ctx context.Context, conn net.Conn) {
 			h.Stats.ErrorCount++
 			h.Logger.Printf("ERROR Can't update deadline for user %s: %v\n", client.ID, err)
 			return
+		}
+		if err := scanner.Err(); err != nil {
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				h.Logger.Printf(
+					"INFO Client %s disconnected (timeout)\n",
+					client.ID,
+				)
+			}
+		} else {
+			h.Logger.Printf(
+				"INFO Client %s disconnected\n",
+				client.ID,
+			)
 		}
 	}
 	h.Logger.Printf("INFO Client %s disconnected\n", client.ID)
