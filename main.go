@@ -3,10 +3,12 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -42,10 +44,11 @@ type Hub struct {
 }
 
 type ServerStats struct {
-	ActiveConnections      int
-	TotalMessagesProcessed int64
-	UptimeSeconds          int64
-	ErrorCount             int
+	ActiveConnections      int   `json:"active_connections"`
+	TotalMessagesProcessed int64 `json:"total_messages_processed"`
+	UptimeSeconds          int64 `json:"uptime_seconds"`
+	ErrorCount             int   `json:"error_count"`
+	StartedAt              int64 `json:"-"`
 }
 
 type MessageHistory struct {
@@ -401,6 +404,48 @@ func printStartupBanner(config ServerConfig) {
 	fmt.Printf("Connect using:   telnet localhost %s\n", config.Port)
 }
 
+func startHTTPMonitoring(hub *Hub, port string) {
+	http.HandleFunc("/health", handleHealthEndpoint(hub))
+	http.HandleFunc("/stats", handleStatsEndpoint(hub))
+	http.ListenAndServe(port, nil)
+}
+
+func handleHealthEndpoint(hub *Hub) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		hub.stats.UptimeSeconds = time.Now().Unix() - hub.stats.StartedAt
+
+		response := struct {
+			Status            string `json:"status"`
+			ActiveConnections int    `json:"active_connections"`
+			UptimeSeconds     int64  `json:"uptime_seconds"`
+		}{
+			Status:            "healthy",
+			ActiveConnections: hub.stats.ActiveConnections,
+			UptimeSeconds:     hub.stats.UptimeSeconds,
+		}
+
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			http.Error(w, "failed to encode response", http.StatusInternalServerError)
+			return
+		}
+	}
+}
+
+func handleStatsEndpoint(hub *Hub) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		hub.stats.UptimeSeconds = time.Now().Unix() - hub.stats.StartedAt
+		stats, err := json.MarshalIndent(hub.stats, "", " ")
+		if err != nil {
+			http.Error(w, "failed to marshal stats", http.StatusInternalServerError)
+			return
+		}
+		w.Write(stats)
+	}
+}
+
 func main() {
 	cfg := parseCommandLineArgs()
 
@@ -413,7 +458,7 @@ func main() {
 		req:        make(chan Request),
 		history:    MessageHistory{buf: make([]ChatMessage, cfg.MessageHistorySize), head: 0},
 		logger:     logger,
-		stats:      new(ServerStats),
+		stats:      &ServerStats{StartedAt: time.Now().Unix()},
 	}
 
 	printStartupBanner(cfg)
@@ -424,6 +469,8 @@ func main() {
 	defer cancel()
 
 	go h.Run(ctx)
+
+	go startHTTPMonitoring(h, ":9090")
 
 	go func() {
 		err := StartEchoServer(ctx, cfg, h)
