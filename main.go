@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"strings"
@@ -30,6 +31,7 @@ type Hub struct {
 	unregister chan *Client
 	req        chan Request
 	history    MessageHistory
+	logger     *log.Logger
 }
 
 type MessageHistory struct {
@@ -91,7 +93,7 @@ func (h *Hub) BroadcastMessage(msg ChatMessage) {
 		if id != msg.ClientID {
 			_, err := client.Conn.Write([]byte(FormatMessage(msg)))
 			if err != nil {
-				fmt.Printf("error writing to client %s: %v\n", id, err)
+				h.logger.Printf("ERROR error writing to client %s: %v\n", id, err)
 			}
 		}
 	}
@@ -102,7 +104,7 @@ func StartEchoServer(port string, h *Hub) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("TCP Chat Server listening on %s\n", port)
+	h.logger.Printf("INFO TCP Chat Server listening on %s\n", port)
 	defer listener.Close()
 	for {
 		conn, err := listener.Accept()
@@ -111,7 +113,6 @@ func StartEchoServer(port string, h *Hub) error {
 		}
 		go handleClient(conn, GenerateClientID(), h)
 	}
-	return nil
 }
 
 func FormatMessage(msg ChatMessage) string {
@@ -132,14 +133,17 @@ func ParseIncomingMessage(raw string, senderID string) ChatMessage {
 }
 
 func handleClient(conn net.Conn, clientID string, h *Hub) {
-	fmt.Printf("user %s connect\n", clientID)
+	h.logger.Printf("INFO Client %s connected\n", clientID)
 	client := h.setupClientConnection(conn)
+	if client == nil {
+		return
+	}
 	defer h.cleanupClient(client)
 
 	h.register <- client
 	scanner := bufio.NewScanner(client.Conn)
 	for scanner.Scan() {
-		fmt.Printf("user %s send message: %s\n", client, scanner.Text())
+		h.logger.Printf("INFO client %s send message: %s\n", client.ID, scanner.Text())
 		space := strings.TrimSpace(scanner.Text())
 		if strings.HasPrefix(space, "/") {
 			h.HandleCommand(client, space)
@@ -148,12 +152,16 @@ func handleClient(conn net.Conn, clientID string, h *Hub) {
 			h.broadcast <- msg
 			_, err := client.Conn.Write([]byte(FormatMessage(msg) + "\n"))
 			if err != nil {
-				fmt.Printf("error during send message client %s: %v\n", client, err)
+				h.logger.Printf("ERROR error during send message client %s: %v\n", client, err)
 			}
 		}
-		client.Conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		err := client.Conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		if err != nil {
+			h.logger.Printf("ERROR Can't update deadline for user %s: %v\n", client.ID, err)
+			return
+		}
 	}
-	fmt.Printf("user %s disconnected\n", client)
+	h.logger.Printf("INFO Client %s disconnected\n", client.ID)
 }
 
 func GenerateClientID() string {
@@ -163,7 +171,7 @@ func GenerateClientID() string {
 func (h *Hub) setupClientConnection(conn net.Conn) *Client {
 	err := conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 	if err != nil {
-		fmt.Printf("error during set deadline: %s\n", err)
+		h.logger.Printf("ERROR error during set deadline: %v\n", err)
 		return nil
 	}
 	client := &Client{
@@ -182,7 +190,7 @@ func (h *Hub) setupClientConnection(conn net.Conn) *Client {
 func (h *Hub) cleanupClient(client *Client) {
 	err := client.Conn.Close()
 	if err != nil {
-		fmt.Printf("error during closing conn for user %s\n", client.ID)
+		h.logger.Printf("ERROR error during closing connection for user %s: %v\n", client.ID, err)
 		return
 	}
 	h.unregister <- client
@@ -244,15 +252,37 @@ func (h *Hub) HandleCommand(client *Client, command string) {
 			MessageType: "system",
 		})))
 	case "/time":
-		client.Conn.Write([]byte(FormatMessage(ChatMessage{
-			Timestamp:   time.Now(),
-			Content:     fmt.Sprintf("Current time: %s", time.Now().Format("15:04:05")),
-			MessageType: "system",
-		})))
+		recent := h.history.GetRecent()
+		if len(recent) > 0 {
+			client.Conn.Write([]byte(FormatMessage(ChatMessage{
+				Timestamp:   time.Now(),
+				Content:     "--- Recent messages ---",
+				MessageType: "system",
+			})))
+
+			for _, msg := range recent {
+				client.Conn.Write([]byte(FormatMessage(msg)))
+			}
+
+			client.Conn.Write([]byte(FormatMessage(ChatMessage{
+				Timestamp:   time.Now(),
+				Content:     "--- End of history ---",
+				MessageType: "system",
+			})))
+		}
 	}
 }
 
+func setupLogging(level string) *log.Logger {
+	return log.New(
+		os.Stdout,
+		"[TCP-CHAT] ",
+		log.Ldate|log.Ltime,
+	)
+}
+
 func main() {
+	logger := setupLogging("INFO")
 	h := &Hub{
 		clients:    make(map[string]*Client),
 		broadcast:  make(chan ChatMessage),
@@ -260,11 +290,13 @@ func main() {
 		unregister: make(chan *Client),
 		req:        make(chan Request),
 		history:    MessageHistory{buf: make([]ChatMessage, 50), head: 0},
+		logger:     logger,
 	}
 	go h.Run()
+
 	err := StartEchoServer(":8080", h)
 	if err != nil {
-		fmt.Printf("error during start server: %v\n", err)
+		logger.Printf("ERROR error during start server: %v\n", err)
 		os.Exit(1)
 	}
 }
