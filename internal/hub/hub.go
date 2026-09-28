@@ -28,6 +28,7 @@ type Hub struct {
 type Request struct {
 	ActiveUserResponse chan []string
 	CountUserResponse  chan int
+	ClientsResponse    chan []*domain.Client
 }
 
 type MessageHistory struct {
@@ -65,11 +66,28 @@ func (h *Hub) GetClientCount() int {
 	return <-response
 }
 
-func (h *Hub) Run(ctx context.Context) {
+func (h *Hub) GetClients(ctx context.Context) ([]*domain.Client, error) {
+	response := make(chan []*domain.Client)
+
+	select {
+	case h.req <- Request{
+		ClientsResponse: response,
+	}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	select {
+	case clients := <-response:
+		return clients, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (h *Hub) Run() {
 	for {
 		select {
-		case <-ctx.Done():
-			return
 		case client := <-h.register:
 			h.clients[client.ID] = client
 			h.Stats.ActiveConnections++
@@ -95,6 +113,14 @@ func (h *Hub) Run(ctx context.Context) {
 				req.ActiveUserResponse <- clients
 			} else if req.CountUserResponse != nil {
 				req.CountUserResponse <- len(h.clients)
+			} else if req.ClientsResponse != nil {
+				clients := make([]*domain.Client, 0, len(h.clients))
+
+				for _, client := range h.clients {
+					clients = append(clients, client)
+				}
+
+				req.ClientsResponse <- clients
 			}
 		}
 	}
@@ -249,12 +275,18 @@ func (h *Hub) HandleCommand(ctx context.Context, client *domain.Client, command 
 }
 
 func (h *Hub) Shutdown(ctx context.Context) error {
-	for _, client := range h.clients {
+	clients, err := h.GetClients(ctx)
+	if err != nil {
+		return err
+	}
+
+	for _, client := range clients {
 		_, err := client.Conn.Write(
 			[]byte(domain.FormatMessage(
 				domain.CreateSystemMessage("Server is shutting down"),
 			)),
 		)
+
 		if err != nil {
 			h.Logger.Printf(
 				"ERROR failed to notify client %s: %v",
@@ -282,6 +314,7 @@ func (h *Hub) Shutdown(ctx context.Context) error {
 
 	select {
 	case <-done:
+		close(h.broadcast)
 		h.Logger.Println("INFO All client goroutines stopped")
 		return nil
 

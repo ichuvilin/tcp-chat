@@ -26,7 +26,7 @@ func New() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go h.Run(ctx)
+	go h.Run()
 
 	go server.StartHTTPMonitoring(h, "9090")
 
