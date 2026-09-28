@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -55,6 +56,13 @@ type MessageHistory struct {
 type Request struct {
 	ActiveUserResponse chan []string
 	CountUserResponse  chan int
+}
+
+type ServerConfig struct {
+	Port               string
+	MaxConnections     int
+	LogLevel           string
+	MessageHistorySize int
 }
 
 func (h *Hub) GetActiveClients() []string {
@@ -121,17 +129,22 @@ func (h *Hub) BroadcastMessage(msg ChatMessage) {
 	}
 }
 
-func StartEchoServer(ctx context.Context, port string, h *Hub) error {
-	listener, err := net.Listen("tcp", port)
+func StartEchoServer(ctx context.Context, cfg ServerConfig, h *Hub) error {
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%s", cfg.Port))
 	if err != nil {
 		return err
 	}
-	h.logger.Printf("INFO TCP Chat Server listening on %s\n", port)
+	h.logger.Printf("INFO TCP Chat Server listening on %s\n", cfg.Port)
 	defer listener.Close()
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			return err
+		}
+		count := h.GetClientCount()
+		if count >= cfg.MaxConnections {
+			conn.Close()
+			continue
 		}
 		h.wg.Add(1)
 		go func() {
@@ -361,18 +374,49 @@ func (h *Hub) Shutdown(ctx context.Context) error {
 	return nil
 }
 
+func parseCommandLineArgs() ServerConfig {
+	port := flag.String("port", "8080", "порт сервера")
+	maxConn := flag.Int("max-conn", 50, "лимит соединений")
+	logLevel := flag.String("log-level", "info", "уровень логирования")
+	historySize := flag.Int("history-size", 50, "размер истории")
+
+	flag.Parse()
+
+	return ServerConfig{
+		Port:               *port,
+		MaxConnections:     *maxConn,
+		LogLevel:           *logLevel,
+		MessageHistorySize: *historySize,
+	}
+}
+
+func printStartupBanner(config ServerConfig) {
+	fmt.Println(`╔══════════════════════════════════════╗
+║         TCP Chat Server              ║
+╚══════════════════════════════════════╝`)
+
+	fmt.Printf("Port:            %s\n", config.Port)
+	fmt.Printf("Max Connections: %d\n", config.MaxConnections)
+	fmt.Printf("Log Level:       %s\n", config.LogLevel)
+	fmt.Printf("Connect using:   telnet localhost %s\n", config.Port)
+}
+
 func main() {
-	logger := setupLogging("INFO")
+	cfg := parseCommandLineArgs()
+
+	logger := setupLogging(cfg.LogLevel)
 	h := &Hub{
 		clients:    make(map[string]*Client),
 		broadcast:  make(chan ChatMessage),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
 		req:        make(chan Request),
-		history:    MessageHistory{buf: make([]ChatMessage, 50), head: 0},
+		history:    MessageHistory{buf: make([]ChatMessage, cfg.MessageHistorySize), head: 0},
 		logger:     logger,
 		stats:      new(ServerStats),
 	}
+
+	printStartupBanner(cfg)
 
 	signals := setupSignalHandling()
 
@@ -382,7 +426,7 @@ func main() {
 	go h.Run(ctx)
 
 	go func() {
-		err := StartEchoServer(ctx, ":8080", h)
+		err := StartEchoServer(ctx, cfg, h)
 		if err != nil {
 			logger.Printf("ERROR error during start server: %v\n", err)
 			os.Exit(1)
